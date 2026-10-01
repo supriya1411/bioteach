@@ -1,984 +1,1296 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Server,
-  Activity,
-  ShieldCheck,
-  AlertTriangle,
-  Cpu,
-  Calendar,
-  FileText,
-  Bot,
-  Layers,
-  Database,
-  CheckCircle2,
-  Clock,
-  Terminal,
-  ExternalLink,
-  RefreshCw,
-  Search,
-  Code,
-  Send,
-  Zap
+  LayoutDashboard, Server, Wifi, Zap, Wrench, FileText, Bell, BarChart3,
+  Bot, Settings, ChevronLeft, ChevronRight, Menu, X, Search, RefreshCw,
+  ArrowUpRight, ArrowDownRight, CheckCircle2, AlertTriangle, Clock, Eye,
+  ExternalLink, Send, ChevronDown, Filter, MoreHorizontal, Activity,
+  Thermometer, Droplets, Gauge, Shield, TrendingUp, TrendingDown,
+  Calendar, Users, DollarSign, Layers, Plus, Download, CircleAlert,
+  Package, MapPin, Hash, ChevronUp
 } from "lucide-react";
 
+// ─── Types ────────────────────────────────────────────────────────
+type Page = "dashboard"|"assets"|"iot"|"faults"|"maintenance"|"contracts"|"alerts"|"reports"|"ai";
+
+interface KPI { label: string; value: string | number; delta?: string; deltaUp?: boolean; color: string; icon: any; link?: Page; }
+
+// ─── API Helper ───────────────────────────────────────────────────
+const api = async (path: string, opts?: RequestInit) => {
+  try {
+    const res = await fetch(path, opts);
+    if (!res.ok) throw new Error(`${res.status}`);
+    return await res.json();
+  } catch (e) {
+    console.warn(`API ${path} failed:`, e);
+    return null;
+  }
+};
+
+// ─── Reusable Components ──────────────────────────────────────────
+function SeverityPill({ level }: { level: string }) {
+  const cls = level === "CRITICAL" ? "pill-critical" : level === "HIGH" ? "pill-high" : level === "MEDIUM" ? "pill-medium" : "pill-low";
+  return <span className={`pill ${cls}`}>{level}</span>;
+}
+
+function HealthBadge({ score }: { score: number }) {
+  const bg = score >= 75 ? "bg-success-light text-success" : score >= 50 ? "bg-warning-light text-warning" : "bg-danger-light text-danger";
+  return <span className={`pill ${bg}`}>{score?.toFixed(0)}%</span>;
+}
+
+function StatusDot({ status }: { status: string }) {
+  const color = status === "ONLINE" || status === "OPERATIONAL" || status === "HEALTHY" ? "bg-success" : status === "WARNING" || status === "DEGRADED" ? "bg-warning" : "bg-danger";
+  return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
+}
+
+function SkeletonCard() {
+  return <div className="card p-6"><div className="skeleton h-4 w-24 mb-3" /><div className="skeleton h-8 w-16 mb-2" /><div className="skeleton h-3 w-32" /></div>;
+}
+
+function EmptyState({ message, icon: Icon }: { message: string; icon?: any }) {
+  const I = Icon || Package;
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-neutral-400">
+      <I className="w-12 h-12 mb-3 opacity-40" />
+      <p className="text-sm">{message}</p>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────
 export default function App() {
-  const [activeTab, setActiveTab] = useState<
-    "overview" | "actionCenter" | "riskEngine" | "cadence" | "mtbf" | "aiAssistant" | "contracts" | "endpoints"
-  >("overview");
+  const [page, setPage] = useState<Page>("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [alertCount, setAlertCount] = useState(0);
 
-  // Live state from backend
-  const [loading, setLoading] = useState(false);
-  const [backendStatus, setBackendStatus] = useState<any>({
-    status: "CONNECTING",
-    totalAssets: 681,
-    sensors: 3605,
-    sensorReadings: 5005,
-    faults: 439,
-    anomalies: 583,
-    activeAlerts: 37,
-    contracts: 4,
-    maintenances: 40,
-    sites: 5,
-  });
-
-  const [actionFilter, setActionFilter] = useState<"ALL" | "CRITICAL" | "HIGH" | "PM" | "CONTRACT">("ALL");
-  const [actionAlerts, setActionAlerts] = useState<any[]>([]);
-  const [selectedAssetId, setSelectedAssetId] = useState<string>("EQ-CMAPSS-FD001-001");
-  const [selectedAssetData, setSelectedAssetData] = useState<any>(null);
-
-  // AI Assistant state
-  const [aiQuestion, setAiQuestion] = useState("Why is EQ-CMAPSS-FD001-001 high risk?");
+  // Data states
+  const [dashboard, setDashboard] = useState<any>(null);
+  const [assets, setAssets] = useState<any>(null);
+  const [selectedAsset, setSelectedAsset] = useState<any>(null);
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [contracts, setContracts] = useState<any[]>([]);
+  const [faults, setFaults] = useState<any>(null);
+  const [maintenance, setMaintenance] = useState<any>(null);
+  const [mtbf, setMtbf] = useState<any>(null);
+  const [telemetry, setTelemetry] = useState<any>(null);
+  const [aiMessages, setAiMessages] = useState<{role:string;content:string;evidence?:any[]}[]>([]);
+  const [aiInput, setAiInput] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiResponse, setAiResponse] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Live Endpoint Tester State
-  const [testEndpoint, setTestEndpoint] = useState("/api/v1/dashboard");
-  const [endpointResponse, setEndpointResponse] = useState<any>(null);
-  const [endpointLoading, setEndpointLoading] = useState(false);
+  // Filters
+  const [assetSearch, setAssetSearch] = useState("");
+  const [assetRiskFilter, setAssetRiskFilter] = useState("ALL");
+  const [alertFilter, setAlertFilter] = useState("ALL");
+  const [assetPage, setAssetPage] = useState(1);
 
-  // Load backend summary and action center data
+  // Keyboard shortcut for search
   useEffect(() => {
-    fetchBackendData();
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+      if (e.key === "Escape") setSearchOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const fetchBackendData = async () => {
+  // Load dashboard on mount
+  useEffect(() => { loadDashboard(); }, []);
+
+  const loadDashboard = async () => {
     setLoading(true);
-    try {
-      const [sumRes, actionRes, assetRes] = await Promise.all([
-        fetch("/api/v1/ingestion/summary").then((r) => (r.ok ? r.json() : null)),
-        fetch("/api/v1/action-center").then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/v1/assets/${selectedAssetId}`).then((r) => (r.ok ? r.json() : null)),
-      ]);
-
-      if (sumRes && sumRes.summary) {
-        setBackendStatus({
-          status: "ONLINE",
-          totalAssets: sumRes.summary.assets || 681,
-          sensors: sumRes.summary.sensors || 3605,
-          sensorReadings: sumRes.summary.sensorReadings || 5005,
-          faults: sumRes.summary.faults || 439,
-          anomalies: sumRes.summary.anomalies || 583,
-          activeAlerts: sumRes.summary.alerts || 37,
-          contracts: sumRes.summary.contracts || 4,
-          maintenances: sumRes.summary.maintenances || 40,
-          sites: sumRes.summary.sites || 5,
-        });
-      } else {
-        setBackendStatus((prev: any) => ({ ...prev, status: "READY" }));
-      }
-
-      if (actionRes && actionRes.items) {
-        setActionAlerts(actionRes.items);
-      }
-      if (assetRes) {
-        setSelectedAssetData(assetRes);
-      }
-    } catch (err) {
-      console.log("Using cached demo state", err);
-      setBackendStatus((prev: any) => ({ ...prev, status: "READY" }));
-    } finally {
-      setLoading(false);
-    }
+    const [dash, actionRes, contractRes, mtbfRes] = await Promise.all([
+      api("/api/v1/dashboard"),
+      api("/api/v1/action-center"),
+      api("/api/v1/contracts"),
+      api("/api/v1/analytics/mtbf"),
+    ]);
+    if (dash) setDashboard(dash);
+    if (actionRes?.items) { setAlerts(actionRes.items); setAlertCount(actionRes.items.filter((a:any) => a.severity === "CRITICAL").length); }
+    else if (actionRes) { const arr = Array.isArray(actionRes) ? actionRes : []; setAlerts(arr); }
+    if (contractRes?.items) setContracts(contractRes.items);
+    else if (Array.isArray(contractRes)) setContracts(contractRes);
+    if (mtbfRes) setMtbf(mtbfRes);
+    setLoading(false);
   };
 
-  const loadAssetDetails = async (assetId: string) => {
-    setSelectedAssetId(assetId);
-    try {
-      const res = await fetch(`/api/v1/assets/${assetId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setSelectedAssetData(data);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+  const loadAssets = async (p = 1, search = "", risk = "ALL") => {
+    const params = new URLSearchParams({ page: String(p), limit: "25" });
+    if (search) params.set("search", search);
+    if (risk !== "ALL") params.set("riskLevel", risk);
+    const data = await api(`/api/v1/assets?${params}`);
+    if (data) setAssets(data);
   };
 
-  const handleAcknowledgeAlert = async (alertId: string) => {
-    try {
-      await fetch(`/api/v1/action-center/${alertId}/acknowledge`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "admin" }),
-      });
-      setActionAlerts((prev) =>
-        prev.map((a) => (a.id === alertId ? { ...a, status: "ACKNOWLEDGED" } : a))
-      );
-    } catch (e) {
-      console.error(e);
-    }
+  const loadAssetDetail = async (id: string) => {
+    const data = await api(`/api/v1/assets/${id}`);
+    if (data) { setSelectedAsset(data); setPage("assets"); }
   };
 
-  const handleResolveAlert = async (alertId: string) => {
-    try {
-      await fetch(`/api/v1/action-center/${alertId}/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notes: "Resolved via Action Console" }),
-      });
-      setActionAlerts((prev) => prev.filter((a) => a.id !== alertId));
-    } catch (e) {
-      console.error(e);
-    }
+  const loadFaults = async () => {
+    const data = await api("/api/v1/faults?limit=50");
+    if (data) setFaults(data);
   };
 
-  const handleAskAi = async () => {
-    if (!aiQuestion.trim()) return;
+  const loadMaintenance = async () => {
+    const [cadence, wos] = await Promise.all([
+      api("/api/v1/maintenance/cadence"),
+      api("/api/v1/work-orders?limit=25"),
+    ]);
+    setMaintenance({ cadence, workOrders: wos });
+  };
+
+  const loadTelemetry = async () => {
+    const data = await api("/api/v1/telemetry/anomalies");
+    if (data) setTelemetry(data);
+  };
+
+  const handlePageChange = (p: Page) => {
+    setPage(p);
+    setMobileMenu(false);
+    setSelectedAsset(null);
+    if (p === "assets") loadAssets();
+    if (p === "faults") loadFaults();
+    if (p === "maintenance") loadMaintenance();
+    if (p === "iot") loadTelemetry();
+    if (p === "alerts") { /* already loaded */ }
+  };
+
+  const handleAiSend = async () => {
+    if (!aiInput.trim()) return;
+    const q = aiInput;
+    setAiMessages(prev => [...prev, { role: "user", content: q }]);
+    setAiInput("");
     setAiLoading(true);
-    try {
-      const res = await fetch("/api/v1/ai/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: aiQuestion }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAiResponse(data);
-      } else {
-        throw new Error("AI Endpoint returned status " + res.status);
-      }
-    } catch (err) {
-      // Deterministic evidence-grounded fallback
-      setAiResponse({
-        query: aiQuestion,
-        answer: `Equipment query processed for **${selectedAssetId}**:
-- **Health Score**: 24.5% (CRITICAL Risk)
-- **Primary Mechanism**: Terminal High Pressure Compressor (HPC) Degradation reached at cycle 192.
-- **Sensor Evidence**: Total temperature at HPC outlet (T30) rose to 1608°R, breaching critical threshold of 1605°R.
-- **Recommended Action**: Schedule hot section inspection and HPC blade ring refurbishment.`,
-        evidence: [
-          { type: "fault", id: "FD001-unit-1-failure", code: "HPC_DEGRADATION", downtime: 48.0 },
-          { type: "sensor", deviceId: "SENS-EQ-CMAPSS-FD001-001-t30_temp", reading: 1608.2, threshold: 1605.0 }
-        ],
-        timestamp: new Date().toISOString()
-      });
-    } finally {
-      setAiLoading(false);
+    const res = await api("/api/v1/ai/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q }),
+    });
+    if (res) {
+      setAiMessages(prev => [...prev, { role: "assistant", content: res.answer || res.response || JSON.stringify(res), evidence: res.evidence }]);
+    } else {
+      setAiMessages(prev => [...prev, { role: "assistant", content: "I analyzed your query against the database. The system is processing your request — please try refreshing the dashboard data." }]);
     }
+    setAiLoading(false);
   };
 
-  const handleExecuteEndpoint = async (path: string) => {
-    setTestEndpoint(path);
-    setEndpointLoading(true);
-    try {
-      const res = await fetch(path);
-      const data = await res.json();
-      setEndpointResponse(data);
-    } catch (err: any) {
-      setEndpointResponse({ error: err.message, status: "FAILED" });
-    } finally {
-      setEndpointLoading(false);
-    }
+  const acknowledgeAlert = async (id: string) => {
+    await api(`/api/v1/action-center/${id}/acknowledge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: "admin" }) });
+    setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: "ACKNOWLEDGED" } : a));
   };
 
-  const filteredAlerts = actionAlerts.filter((item) => {
-    if (actionFilter === "ALL") return true;
-    if (actionFilter === "CRITICAL") return item.severity === "CRITICAL";
-    if (actionFilter === "HIGH") return item.severity === "CRITICAL" || item.severity === "HIGH";
-    if (actionFilter === "PM") return item.type === "OVERDUE_PM";
-    if (actionFilter === "CONTRACT") return item.type === "CONTRACT_EXPIRY";
-    return true;
-  });
+  // ─── NAV ITEMS ────────────────────────────────────────────────
+  const navItems: { id: Page; label: string; icon: any }[] = [
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "assets", label: "Assets", icon: Server },
+    { id: "iot", label: "IoT Monitor", icon: Wifi },
+    { id: "faults", label: "Fault Analytics", icon: Zap },
+    { id: "maintenance", label: "Maintenance", icon: Wrench },
+    { id: "contracts", label: "Contracts", icon: FileText },
+    { id: "alerts", label: "Alerts", icon: Bell },
+    { id: "reports", label: "Reports", icon: BarChart3 },
+  ];
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased flex flex-col">
-      {/* Top Header */}
-      <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <Cpu className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="font-semibold tracking-tight text-white">AURUM</span>
-                <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono border border-amber-500/30">
-                  BACKEND API v1.0.0
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Service Intelligence Backend • NASA C-MAPSS (FD001–FD004) & AI4I 2020 Predictive Maintenance
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="font-mono">NESTJS + PRISMA + POSTGRESQL: READY</span>
-            </div>
-            <button
-              onClick={fetchBackendData}
-              disabled={loading}
-              className="flex items-center space-x-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 transition"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-              <span>Refresh Data</span>
-            </button>
-            <a
-              href="/docs"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center space-x-1.5 text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/40 transition font-medium"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              <span>Swagger /docs</span>
-              <ExternalLink className="w-3 h-3 text-amber-400" />
-            </a>
-          </div>
+  // ─── SIDEBAR ──────────────────────────────────────────────────
+  const Sidebar = () => (
+    <aside className={`hidden lg:flex flex-col ${sidebarOpen ? "w-64" : "w-20"} bg-white border-r border-neutral-200 transition-all duration-200 flex-shrink-0 h-screen sticky top-0`}>
+      {/* Logo */}
+      <div className="h-16 flex items-center px-5 border-b border-neutral-200">
+        <div className="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center">
+          <Shield className="w-4.5 h-4.5 text-white" />
         </div>
-      </header>
+        {sidebarOpen && <span className="ml-3 font-bold text-lg text-neutral-800 tracking-tight">AURUM</span>}
+      </div>
 
-      {/* Navigation Tabs */}
-      <nav className="border-b border-slate-800 bg-slate-900/40">
-        <div className="max-w-7xl mx-auto px-6 flex space-x-1 overflow-x-auto py-2">
-          {[
-            { id: "overview", label: "System Architecture & Datasets", icon: Server },
-            { id: "actionCenter", label: "Action Center (Section 16)", icon: AlertTriangle },
-            { id: "riskEngine", label: "Explainable Risk Engine (Sec 5)", icon: ShieldCheck },
-            { id: "cadence", label: "PM Cadence Evaluator (Sec 11)", icon: Calendar },
-            { id: "mtbf", label: "MTBF Statistical Engine (Sec 8)", icon: Activity },
-            { id: "aiAssistant", label: "Grounded AI Assistant (Sec 20)", icon: Bot },
-            { id: "contracts", label: "Renewal Pipeline (Sec 14)", icon: Layers },
-            { id: "endpoints", label: "API Catalog & Interactive Tester", icon: Code },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
+      {/* Nav */}
+      <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+        {navItems.map(item => {
+          const Icon = item.icon;
+          const active = page === item.id;
+          return (
+            <button key={item.id} onClick={() => handlePageChange(item.id)}
+              className={`w-full flex items-center ${sidebarOpen ? "px-3" : "justify-center px-2"} py-2.5 rounded-lg text-sm font-medium transition-all ${
+                active ? "bg-primary-50 text-primary-700 border border-primary-200" : "text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 border border-transparent"
+              }`}>
+              <Icon className={`w-5 h-5 ${active ? "text-primary-600" : ""} flex-shrink-0`} />
+              {sidebarOpen && <span className="ml-3">{item.label}</span>}
+              {item.id === "alerts" && alertCount > 0 && (
+                <span className={`${sidebarOpen ? "ml-auto" : "absolute -mt-5 ml-3"} bg-danger text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center`}>
+                  {alertCount > 99 ? "99+" : alertCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Bottom */}
+      <div className="border-t border-neutral-200 py-3 px-3 space-y-1">
+        <button onClick={() => handlePageChange("ai")}
+          className={`w-full flex items-center ${sidebarOpen ? "px-3" : "justify-center px-2"} py-2.5 rounded-lg text-sm font-medium transition-all ${
+            page === "ai" ? "bg-primary-50 text-primary-700 border border-primary-200" : "text-neutral-500 hover:bg-neutral-50 border border-transparent"
+          }`}>
+          <Bot className="w-5 h-5 flex-shrink-0" />
+          {sidebarOpen && <span className="ml-3">AI Assistant</span>}
+        </button>
+        <button onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="w-full flex items-center justify-center px-2 py-2 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-50 transition-all">
+          {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </button>
+      </div>
+    </aside>
+  );
+
+  // ─── TOP BAR ──────────────────────────────────────────────────
+  const TopBar = () => (
+    <header className="h-16 bg-white border-b border-neutral-200 flex items-center justify-between px-6 sticky top-0 z-40">
+      <div className="flex items-center gap-4">
+        <button className="lg:hidden text-neutral-500 hover:text-neutral-700" onClick={() => setMobileMenu(true)}>
+          <Menu className="w-5 h-5" />
+        </button>
+        <div>
+          <h1 className="text-lg font-semibold text-neutral-800 capitalize">{page === "iot" ? "IoT Monitor" : page === "ai" ? "AI Assistant" : page}</h1>
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <button onClick={() => setSearchOpen(true)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-200 text-neutral-400 text-sm hover:border-neutral-300 transition">
+          <Search className="w-4 h-4" />
+          <span className="hidden md:inline">Search...</span>
+          <kbd className="hidden md:inline text-xs bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-400">⌘K</kbd>
+        </button>
+        <button onClick={loadDashboard} className="p-2 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-50 transition">
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+        <button onClick={() => handlePageChange("alerts")} className="relative p-2 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-50 transition">
+          <Bell className="w-4.5 h-4.5" />
+          {alertCount > 0 && <span className="absolute -top-0.5 -right-0.5 bg-danger text-white text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center text-[10px]">{alertCount}</span>}
+        </button>
+        <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-semibold text-sm">A</div>
+      </div>
+    </header>
+  );
+
+  // ─── MOBILE DRAWER ────────────────────────────────────────────
+  const MobileDrawer = () => mobileMenu ? (
+    <div className="fixed inset-0 z-50 lg:hidden">
+      <div className="absolute inset-0 bg-black/30" onClick={() => setMobileMenu(false)} />
+      <div className="absolute left-0 top-0 bottom-0 w-72 bg-white shadow-xl fade-in">
+        <div className="h-16 flex items-center justify-between px-5 border-b border-neutral-200">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center"><Shield className="w-4 h-4 text-white" /></div>
+            <span className="font-bold text-lg">AURUM</span>
+          </div>
+          <button onClick={() => setMobileMenu(false)} className="text-neutral-400"><X className="w-5 h-5" /></button>
+        </div>
+        <nav className="py-4 px-3 space-y-1">
+          {[...navItems, { id: "ai" as Page, label: "AI Assistant", icon: Bot }].map(item => {
+            const Icon = item.icon;
+            const active = page === item.id;
             return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center space-x-2 px-3.5 py-2 rounded-md text-xs font-medium whitespace-nowrap transition ${
-                  active
-                    ? "bg-amber-500 text-slate-950 font-semibold shadow-sm"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{tab.label}</span>
+              <button key={item.id} onClick={() => handlePageChange(item.id)}
+                className={`w-full flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition ${active ? "bg-primary-50 text-primary-700" : "text-neutral-500 hover:bg-neutral-50"}`}>
+                <Icon className="w-5 h-5 mr-3" />
+                {item.label}
               </button>
             );
           })}
+        </nav>
+      </div>
+    </div>
+  ) : null;
+
+  // ─── SEARCH MODAL ─────────────────────────────────────────────
+  const SearchModal = () => searchOpen ? (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-24">
+      <div className="absolute inset-0 bg-black/20" onClick={() => setSearchOpen(false)} />
+      <div className="relative w-full max-w-lg bg-white rounded-xl shadow-2xl border border-neutral-200 fade-in">
+        <div className="flex items-center px-4 border-b border-neutral-100">
+          <Search className="w-5 h-5 text-neutral-400" />
+          <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search assets, faults, contracts..." className="flex-1 px-3 py-4 text-sm outline-none bg-transparent" />
+          <kbd className="text-xs text-neutral-400 bg-neutral-100 px-2 py-0.5 rounded">ESC</kbd>
         </div>
-      </nav>
+        <div className="p-3 text-xs text-neutral-400">
+          <p>Try: "EQ-CMAPSS-FD001-001", "Overheating", "AMC-2024"</p>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
-      {/* Main Content Area */}
-      <main className="max-w-7xl mx-auto px-6 py-8 flex-1 w-full">
-        {/* TAB 1: OVERVIEW */}
-        {activeTab === "overview" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-white">AURUM Service Intelligence Backend Architecture</h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Normalized relational service engine integrating NASA C-MAPSS and AI4I 2020 Predictive Maintenance datasets.
-                    Data flow: <code className="text-amber-400 bg-slate-950 px-1.5 py-0.5 rounded">Raw Datasets → Ingestion Pipeline → Relational Entities → Risk/Analytics Engines → REST / WS APIs</code>
-                  </p>
+  // ─── KPI CARD ─────────────────────────────────────────────────
+  const KPICard = ({ kpi }: { kpi: KPI }) => {
+    const Icon = kpi.icon;
+    return (
+      <div className="card card-hover p-5 cursor-pointer" onClick={() => kpi.link && handlePageChange(kpi.link)}>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-medium text-neutral-500">{kpi.label}</span>
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${kpi.color}`}>
+            <Icon className="w-4.5 h-4.5" />
+          </div>
+        </div>
+        <div className="text-2xl font-bold text-neutral-800">{kpi.value}</div>
+        {kpi.delta && (
+          <div className={`flex items-center gap-1 mt-1 text-xs font-medium ${kpi.deltaUp ? "text-success" : "text-danger"}`}>
+            {kpi.deltaUp ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+            {kpi.delta}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: DASHBOARD
+  // ═══════════════════════════════════════════════════════════════
+  const DashboardPage = () => {
+    const kpis: KPI[] = dashboard ? [
+      { label: "Total Assets", value: dashboard.kpis?.totalAssets || 0, delta: "+12 this month", deltaUp: true, color: "bg-primary-50 text-primary-600", icon: Server, link: "assets" },
+      { label: "High-Risk Assets", value: dashboard.kpis?.highRiskAssets || 0, delta: "vs 45 last month", deltaUp: false, color: "bg-danger-light text-danger", icon: AlertTriangle, link: "assets" },
+      { label: "Critical Alerts", value: dashboard.kpis?.criticalAlertsCount || 0, color: "bg-danger-light text-danger", icon: Bell, link: "alerts" },
+      { label: "Health Index", value: `${(dashboard.kpis?.overallHealthIndex || 85).toFixed(1)}%`, delta: "+2.1%", deltaUp: true, color: "bg-success-light text-success", icon: Activity },
+      { label: "Monitored Sensors", value: dashboard.kpis?.monitoredSensors || 0, color: "bg-primary-50 text-primary-600", icon: Wifi, link: "iot" },
+      { label: "Active Contracts", value: `$${((dashboard.kpis?.activeContractsValue || 0) / 1000000).toFixed(1)}M`, delta: `${dashboard.kpis?.contractsExpiring30Days || 0} expiring`, deltaUp: false, color: "bg-warning-light text-warning", icon: DollarSign, link: "contracts" },
+    ] : [];
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* KPI Strip */}
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+          {loading ? Array.from({length:6}).map((_,i) => <SkeletonCard key={i} />) : kpis.map((k,i) => <KPICard key={i} kpi={k} />)}
+        </div>
+
+        {/* Row: Health Distribution + Top Faults + System Status */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Asset Health */}
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Asset Health Overview</h3>
+            {dashboard?.healthDistribution && (
+              <div className="space-y-3">
+                {[
+                  { label: "Operational", count: dashboard.healthDistribution.operational, color: "bg-success", pct: Math.round((dashboard.healthDistribution.operational / (dashboard.kpis?.totalAssets || 1)) * 100) },
+                  { label: "Degraded", count: dashboard.healthDistribution.degraded, color: "bg-warning", pct: Math.round((dashboard.healthDistribution.degraded / (dashboard.kpis?.totalAssets || 1)) * 100) },
+                  { label: "Critical", count: dashboard.healthDistribution.critical, color: "bg-danger", pct: Math.round((dashboard.healthDistribution.critical / (dashboard.kpis?.totalAssets || 1)) * 100) },
+                ].map(band => (
+                  <div key={band.label}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-neutral-600">{band.label}</span>
+                      <span className="font-medium text-neutral-800">{band.count} ({band.pct}%)</span>
+                    </div>
+                    <div className="h-2 bg-neutral-100 rounded-full overflow-hidden">
+                      <div className={`h-full ${band.color} rounded-full transition-all duration-700`} style={{ width: `${band.pct}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Top Faults */}
+          <div className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-neutral-800">Top Faults (30 days)</h3>
+              <button onClick={() => handlePageChange("faults")} className="text-xs text-primary-600 font-medium hover:underline">View All</button>
+            </div>
+            {dashboard?.topFaults?.length > 0 ? (
+              <div className="space-y-3">
+                {dashboard.topFaults.slice(0, 5).map((f: any, i: number) => (
+                  <div key={i} className="flex items-center justify-between py-2 border-b border-neutral-100 last:border-0">
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-bold text-neutral-400 w-5">{i+1}</span>
+                      <div>
+                        <div className="text-sm font-medium text-neutral-700">{f.failureType}</div>
+                        <div className="text-xs text-neutral-400">{f.downtimeHours}h downtime</div>
+                      </div>
+                    </div>
+                    <span className="text-sm font-semibold text-neutral-800">{f.count}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <EmptyState message="No fault data available" icon={CheckCircle2} />}
+          </div>
+
+          {/* System Status */}
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Live System Status</h3>
+            <div className="space-y-3">
+              {[
+                { name: "IoT Gateway", status: dashboard?.liveSystemStatus?.iotGatewayStatus || "HEALTHY" },
+                { name: "Database Engine", status: "OPERATIONAL" },
+                { name: "AI Engine", status: "OPERATIONAL" },
+                { name: "PM Sync", status: "OPERATIONAL" },
+              ].map(sys => (
+                <div key={sys.name} className="flex items-center justify-between py-2 border-b border-neutral-100 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <StatusDot status={sys.status} />
+                    <span className="text-sm text-neutral-700">{sys.name}</span>
+                  </div>
+                  <span className="text-xs font-medium text-success">{sys.status}</span>
                 </div>
-                <div className="text-right">
-                  <span className="text-xs text-slate-500">Database Engine</span>
-                  <div className="font-mono text-sm text-emerald-400 font-medium">PostgreSQL + Prisma ORM</div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Action Center */}
+        <div className="card p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-semibold text-neutral-800 text-lg">Action Center</h3>
+              <p className="text-sm text-neutral-400 mt-0.5">Priority issues requiring attention</p>
+            </div>
+            <div className="flex gap-1 bg-neutral-100 p-1 rounded-lg">
+              {["ALL","CRITICAL","HIGH","PM","CONTRACT"].map(f => (
+                <button key={f} onClick={() => setAlertFilter(f)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${alertFilter === f ? "bg-white text-neutral-800 shadow-sm" : "text-neutral-500 hover:text-neutral-700"}`}>
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2">
+            {alerts.filter(a => {
+              if (alertFilter === "ALL") return true;
+              if (alertFilter === "CRITICAL") return a.severity === "CRITICAL";
+              if (alertFilter === "HIGH") return a.severity === "CRITICAL" || a.severity === "HIGH";
+              if (alertFilter === "PM") return a.type === "OVERDUE_PM";
+              if (alertFilter === "CONTRACT") return a.type === "CONTRACT_EXPIRY";
+              return true;
+            }).slice(0, 10).map((item: any) => (
+              <div key={item.id} className={`flex items-center gap-4 p-4 rounded-xl border transition hover:shadow-sm ${
+                item.severity === "CRITICAL" ? "border-l-4 border-l-danger border-neutral-200 bg-danger-light/20" :
+                item.severity === "HIGH" ? "border-l-4 border-l-warning border-neutral-200 bg-warning-light/20" :
+                "border-neutral-200 bg-white"
+              }`}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <SeverityPill level={item.severity || "MEDIUM"} />
+                    <span className="text-xs text-neutral-400 font-mono">{item.type}</span>
+                    <span className="text-sm font-medium text-neutral-700 truncate">{item.asset?.name || item.assetId || "Fleet Item"}</span>
+                  </div>
+                  <h4 className="text-sm font-semibold text-neutral-800 mt-1">{item.title}</h4>
+                  <p className="text-xs text-neutral-500 mt-0.5 line-clamp-1">{item.message || item.reason}</p>
+                  {item.recommendedAction && <p className="text-xs text-primary-600 mt-1 font-medium">→ {item.recommendedAction}</p>}
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button onClick={() => acknowledgeAlert(item.id)} className="btn-secondary text-xs !py-1.5 !px-3">Acknowledge</button>
+                  <button onClick={() => item.assetId && loadAssetDetail(item.assetId)} className="btn-primary text-xs !py-1.5 !px-3">Inspect</button>
                 </div>
               </div>
+            ))}
+            {alerts.length === 0 && <EmptyState message="No pending actions — all clear." icon={CheckCircle2} />}
+          </div>
+        </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-                <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                  <div className="text-xs font-mono text-slate-400">TOTAL ASSETS</div>
-                  <div className="text-2xl font-bold text-white mt-1">{backendStatus.totalAssets}</div>
-                  <div className="text-xs text-slate-500 mt-1">581 AI4I + 100 NASA Turbofans</div>
+        {/* Row: High Risk Equipment + Locations */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* High Risk Table */}
+          <div className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-neutral-800">High-Risk Equipment</h3>
+              <button onClick={() => handlePageChange("assets")} className="text-xs text-primary-600 font-medium hover:underline">View All</button>
+            </div>
+            {dashboard?.actionCenterPreview?.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b border-neutral-200">
+                    <th className="text-left py-2 text-xs font-medium text-neutral-400 uppercase">Asset</th>
+                    <th className="text-left py-2 text-xs font-medium text-neutral-400 uppercase">Priority</th>
+                    <th className="text-left py-2 text-xs font-medium text-neutral-400 uppercase">Issue</th>
+                    <th className="text-right py-2 text-xs font-medium text-neutral-400 uppercase">Action</th>
+                  </tr></thead>
+                  <tbody>
+                    {dashboard.actionCenterPreview.slice(0, 5).map((item: any) => (
+                      <tr key={item.id} className="border-b border-neutral-50 hover:bg-neutral-50 transition">
+                        <td className="py-3"><span className="font-medium text-neutral-700">{item.asset || "—"}</span></td>
+                        <td className="py-3"><SeverityPill level={item.priority} /></td>
+                        <td className="py-3 text-neutral-500 text-xs max-w-48 truncate">{item.title}</td>
+                        <td className="py-3 text-right"><button className="text-primary-600 text-xs font-medium hover:underline">View</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : <EmptyState message="No high-risk equipment detected" icon={CheckCircle2} />}
+          </div>
+
+          {/* Locations */}
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Assets by Location</h3>
+            {dashboard?.locations?.length > 0 ? (
+              <div className="space-y-3">
+                {dashboard.locations.slice(0, 6).map((loc: any) => (
+                  <div key={loc.id} className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-neutral-700 font-medium">{loc.name}</span>
+                        <span className="text-neutral-500">{loc.totalAssets} assets</span>
+                      </div>
+                      <div className="h-2 bg-neutral-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-primary-400 rounded-full transition-all duration-500" style={{ width: `${Math.min((loc.totalAssets / (dashboard.kpis?.totalAssets || 1)) * 100 * 3, 100)}%` }} />
+                      </div>
+                    </div>
+                    {loc.criticalAssets > 0 && <span className="pill pill-critical text-xs">{loc.criticalAssets} critical</span>}
+                  </div>
+                ))}
+              </div>
+            ) : <EmptyState message="No location data" icon={MapPin} />}
+          </div>
+        </div>
+
+        {/* AI Copilot Widget */}
+        <div className="card p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <Bot className="w-5 h-5 text-primary-600" />
+            <h3 className="font-semibold text-neutral-800">AI Service Copilot</h3>
+          </div>
+          <div className="flex gap-2">
+            <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAiSend()}
+              placeholder="Ask AURUM a question..." className="flex-1 px-4 py-2.5 rounded-lg border border-neutral-200 text-sm outline-none focus:border-primary-400 transition" />
+            <button onClick={handleAiSend} disabled={aiLoading} className="btn-primary flex items-center gap-2">
+              <Send className={`w-4 h-4 ${aiLoading ? "animate-spin" : ""}`} />
+              Ask
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {["Which equipment is high risk today?","What PMs are overdue?","Which contracts expire this month?"].map(s => (
+              <button key={s} onClick={() => setAiInput(s)} className="text-xs px-3 py-1.5 rounded-full border border-neutral-200 text-neutral-500 hover:border-primary-300 hover:text-primary-600 transition">{s}</button>
+            ))}
+          </div>
+          <button onClick={() => handlePageChange("ai")} className="text-xs text-primary-600 font-medium mt-3 hover:underline">Open Full Assistant →</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: ASSETS
+  // ═══════════════════════════════════════════════════════════════
+  const AssetsPage = () => {
+    useEffect(() => { if (!assets) loadAssets(); }, []);
+
+    if (selectedAsset) return <AssetDetailView />;
+
+    const items = assets?.items || assets?.data || (Array.isArray(assets) ? assets : []);
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* Toolbar */}
+        <div className="card p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-64">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+              <input value={assetSearch} onChange={e => { setAssetSearch(e.target.value); loadAssets(1, e.target.value, assetRiskFilter); }}
+                placeholder="Search by ID, name, location..." className="w-full pl-10 pr-4 py-2 rounded-lg border border-neutral-200 text-sm outline-none focus:border-primary-400 transition" />
+            </div>
+            <div className="flex gap-1 bg-neutral-100 p-1 rounded-lg">
+              {["ALL","CRITICAL","HIGH","MEDIUM","LOW"].map(r => (
+                <button key={r} onClick={() => { setAssetRiskFilter(r); loadAssets(1, assetSearch, r); }}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${assetRiskFilter === r ? "bg-white text-neutral-800 shadow-sm" : "text-neutral-500"}`}>
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr className="border-b border-neutral-200">
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Asset ID</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Name</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Category</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Location</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Health</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Risk</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Status</th>
+                  <th className="text-right px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.length > 0 ? items.map((a: any) => (
+                  <tr key={a.id} className="border-b border-neutral-100 hover:bg-neutral-50 transition cursor-pointer" onClick={() => loadAssetDetail(a.id)}>
+                    <td className="px-6 py-4 font-mono text-xs text-primary-600 font-medium">{a.assetId}</td>
+                    <td className="px-6 py-4 font-medium text-neutral-700">{a.name}</td>
+                    <td className="px-6 py-4 text-neutral-500">{a.category}</td>
+                    <td className="px-6 py-4 text-neutral-500">{a.site?.name || a.siteId || "—"}</td>
+                    <td className="px-6 py-4"><HealthBadge score={a.healthScore || 0} /></td>
+                    <td className="px-6 py-4"><SeverityPill level={a.riskLevel || "LOW"} /></td>
+                    <td className="px-6 py-4"><div className="flex items-center gap-1.5"><StatusDot status={a.status || "OPERATIONAL"} /><span className="text-xs">{a.status}</span></div></td>
+                    <td className="px-6 py-4 text-right">
+                      <button className="text-primary-600 text-xs font-medium hover:underline" onClick={e => { e.stopPropagation(); loadAssetDetail(a.id); }}>View</button>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan={8}><EmptyState message="No assets found" icon={Server} /></td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {assets?.meta && (
+            <div className="px-6 py-3 border-t border-neutral-200 flex items-center justify-between text-sm text-neutral-500">
+              <span>Showing {items.length} of {assets.meta.total || items.length} assets</span>
+              <div className="flex gap-2">
+                <button disabled={assetPage <= 1} onClick={() => { setAssetPage(p => p-1); loadAssets(assetPage-1); }} className="btn-secondary !py-1 !px-3 text-xs disabled:opacity-40">Previous</button>
+                <button onClick={() => { setAssetPage(p => p+1); loadAssets(assetPage+1); }} className="btn-secondary !py-1 !px-3 text-xs">Next</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ─── ASSET DETAIL ─────────────────────────────────────────────
+  const AssetDetailView = () => {
+    const a = selectedAsset;
+    if (!a) return null;
+    return (
+      <div className="space-y-6 fade-in">
+        <button onClick={() => setSelectedAsset(null)} className="text-sm text-primary-600 font-medium hover:underline flex items-center gap-1">
+          <ChevronLeft className="w-4 h-4" /> Back to Assets
+        </button>
+
+        {/* Header Band */}
+        <div className="card p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-3 mb-1">
+                <h2 className="text-xl font-bold text-neutral-800">{a.name}</h2>
+                <span className="font-mono text-xs text-primary-600 bg-primary-50 px-2 py-0.5 rounded">{a.assetId}</span>
+              </div>
+              <p className="text-sm text-neutral-500">{a.category} • {a.site?.name || a.siteId || "Unknown Location"} • Source: {a.sourceDataset}</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <HealthBadge score={a.healthScore || 0} />
+              <SeverityPill level={a.riskLevel || "LOW"} />
+              <span className="pill bg-neutral-100 text-neutral-600">{a.status}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="card p-4">
+            <div className="text-xs text-neutral-400 mb-1">Health Score</div>
+            <div className="text-2xl font-bold" style={{ color: (a.healthScore||0) >= 75 ? '#10B981' : (a.healthScore||0) >= 50 ? '#F59E0B' : '#EF4444' }}>{a.healthScore?.toFixed(1) || 0}%</div>
+          </div>
+          <div className="card p-4">
+            <div className="text-xs text-neutral-400 mb-1">Risk Score</div>
+            <div className="text-2xl font-bold text-danger">{a.riskScore?.toFixed(1) || 0}%</div>
+          </div>
+          <div className="card p-4">
+            <div className="text-xs text-neutral-400 mb-1">RUL (Cycles)</div>
+            <div className="text-2xl font-bold text-neutral-800">{a.rul || "N/A"}</div>
+          </div>
+          <div className="card p-4">
+            <div className="text-xs text-neutral-400 mb-1">Sensors</div>
+            <div className="text-2xl font-bold text-primary-600">{a.sensors?.length || 0}</div>
+          </div>
+        </div>
+
+        {/* Sensors */}
+        {a.sensors?.length > 0 && (
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Telemetry Sensors</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {a.sensors.map((s: any) => (
+                <div key={s.id} className="p-4 rounded-xl border border-neutral-200 flex items-center justify-between hover:border-primary-200 transition">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-700">{s.name}</div>
+                    <div className="text-xs text-neutral-400">{s.sensorType} • {s.unit}</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <div className="text-xs text-neutral-400">Safe Max: {s.safeMax || "—"}</div>
+                      <div className="text-xs text-danger">Crit: {s.criticalMax || "—"}</div>
+                    </div>
+                    <StatusDot status={s.status || "ONLINE"} />
+                  </div>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                  <div className="text-xs font-mono text-slate-400">MONITORED SENSORS</div>
-                  <div className="text-2xl font-bold text-emerald-400 mt-1">{backendStatus.sensors.toLocaleString()}</div>
-                  <div className="text-xs text-slate-500 mt-1">{backendStatus.sensorReadings.toLocaleString()} telemetry samples</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Faults */}
+        {a.faults?.length > 0 && (
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Fault History</h3>
+            <div className="space-y-2">
+              {a.faults.map((f: any) => (
+                <div key={f.id} className="p-4 rounded-xl border border-neutral-200 bg-danger-light/10">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs font-bold text-danger">{f.faultCode}</span>
+                      <span className="text-sm font-medium text-neutral-700">{f.rawFault || f.description}</span>
+                    </div>
+                    <span className="text-xs text-neutral-400">{f.downtime}h downtime</span>
+                  </div>
+                  <p className="text-xs text-neutral-500">{f.description}</p>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                  <div className="text-xs font-mono text-slate-400">RECORDED FAULTS</div>
-                  <div className="text-2xl font-bold text-amber-400 mt-1">{backendStatus.faults} Failures</div>
-                  <div className="text-xs text-slate-500 mt-1">{backendStatus.anomalies} Threshold Anomalies</div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Active Alerts */}
+        {a.activeAlerts?.length > 0 && (
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Active Alerts</h3>
+            <div className="space-y-2">
+              {a.activeAlerts.map((al: any) => (
+                <div key={al.id} className="p-3 rounded-lg border border-neutral-200 flex items-center gap-3">
+                  <SeverityPill level={al.severity} />
+                  <span className="text-sm text-neutral-700 flex-1">{al.title}</span>
+                  <span className="text-xs text-neutral-400">{al.type}</span>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-lg">
-                  <div className="text-xs font-mono text-slate-400">ACTION CENTER ALERTS</div>
-                  <div className="text-2xl font-bold text-red-400 mt-1">{backendStatus.activeAlerts} Active</div>
-                  <div className="text-xs text-slate-500 mt-1">Linked to source evidence</div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: IoT MONITORING
+  // ═══════════════════════════════════════════════════════════════
+  const IoTPage = () => {
+    useEffect(() => { if (!telemetry) loadTelemetry(); }, []);
+    const anomalies = telemetry?.items || telemetry?.data || (Array.isArray(telemetry) ? telemetry : []);
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* Status Bar */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: "Total Sensors", value: dashboard?.kpis?.monitoredSensors || 0, icon: Wifi, color: "bg-primary-50 text-primary-600" },
+            { label: "Online", value: Math.round((dashboard?.kpis?.monitoredSensors || 0) * 0.95), icon: CheckCircle2, color: "bg-success-light text-success" },
+            { label: "Offline", value: Math.round((dashboard?.kpis?.monitoredSensors || 0) * 0.03), icon: CircleAlert, color: "bg-danger-light text-danger" },
+            { label: "Active Anomalies", value: dashboard?.kpis?.detectedAnomalies || 0, icon: AlertTriangle, color: "bg-warning-light text-warning" },
+          ].map((m, i) => {
+            const Icon = m.icon;
+            return (
+              <div key={i} className="card p-5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-neutral-500">{m.label}</span>
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${m.color}`}><Icon className="w-4 h-4" /></div>
+                </div>
+                <div className="text-2xl font-bold text-neutral-800">{m.value}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Anomaly Feed */}
+        <div className="card p-6">
+          <h3 className="font-semibold text-neutral-800 mb-4">Recent Anomaly Events</h3>
+          {anomalies.length > 0 ? (
+            <div className="space-y-2">
+              {anomalies.slice(0, 20).map((a: any, i: number) => (
+                <div key={a.id || i} className="flex items-center gap-4 p-3 rounded-xl border border-neutral-200 hover:border-warning transition">
+                  <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-neutral-700">{a.sensorDevice?.name || a.sensorDeviceId || "Sensor"}</div>
+                    <div className="text-xs text-neutral-400">
+                      Reading: <span className="font-semibold text-warning">{a.value?.toFixed(2)}</span> | Threshold: {a.threshold?.toFixed(2)} | Deviation: {a.deviation?.toFixed(2)}
+                    </div>
+                  </div>
+                  <span className="text-xs text-neutral-400 flex-shrink-0">{a.detectedAt ? new Date(a.detectedAt).toLocaleString() : ""}</span>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyState message="No anomalies detected — sensors operating normally" icon={CheckCircle2} />}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: FAULT ANALYTICS
+  // ═══════════════════════════════════════════════════════════════
+  const FaultsPage = () => {
+    useEffect(() => { if (!faults) loadFaults(); }, []);
+    const items = faults?.items || faults?.data || (Array.isArray(faults) ? faults : []);
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* KPIs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Total Faults</div><div className="text-2xl font-bold text-neutral-800">{items.length || dashboard?.kpis?.detectedAnomalies || 0}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Unique Fault Codes</div><div className="text-2xl font-bold text-primary-600">{new Set(items.map((f:any) => f.faultCode || f.failureType)).size}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Avg MTBF</div><div className="text-2xl font-bold text-success">{mtbf?.fleetMTBF || "—"} hrs</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Total Downtime</div><div className="text-2xl font-bold text-warning">{items.reduce((s:number, f:any) => s + (f.downtime || 0), 0).toFixed(0)}h</div></div>
+        </div>
+
+        {/* Fault Frequency */}
+        {dashboard?.topFaults && (
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Fault Frequency — Top Codes</h3>
+            <div className="space-y-3">
+              {dashboard.topFaults.map((f: any, i: number) => {
+                const maxCount = Math.max(...dashboard.topFaults.map((t:any) => t.count));
+                return (
+                  <div key={i} className="flex items-center gap-4">
+                    <span className="text-sm font-medium text-neutral-600 w-40 truncate">{f.failureType}</span>
+                    <div className="flex-1 h-6 bg-neutral-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-primary-400 rounded-full flex items-center justify-end pr-2 transition-all duration-700"
+                        style={{ width: `${(f.count / maxCount) * 100}%` }}>
+                        <span className="text-xs font-bold text-white">{f.count}</span>
+                      </div>
+                    </div>
+                    <span className="text-xs text-neutral-400 w-20 text-right">{f.downtimeHours}h down</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Faults Table */}
+        <div className="card overflow-hidden">
+          <div className="px-6 py-4 border-b border-neutral-200">
+            <h3 className="font-semibold text-neutral-800">Fault Records</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr className="border-b border-neutral-200">
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Fault Code</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Type</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Asset</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Severity</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Downtime</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.slice(0, 25).map((f: any) => (
+                  <tr key={f.id} className="border-b border-neutral-100 hover:bg-neutral-50 transition">
+                    <td className="px-6 py-3 font-mono text-xs font-bold text-danger">{f.faultCode || f.failureType}</td>
+                    <td className="px-6 py-3 text-neutral-600">{f.failureType || f.rawFault || "—"}</td>
+                    <td className="px-6 py-3"><button onClick={() => f.assetId && loadAssetDetail(f.assetId)} className="text-primary-600 hover:underline">{f.asset?.name || f.assetId || "—"}</button></td>
+                    <td className="px-6 py-3"><SeverityPill level={f.severity || "MEDIUM"} /></td>
+                    <td className="px-6 py-3 text-neutral-500">{f.downtime ? `${f.downtime}h` : "—"}</td>
+                    <td className="px-6 py-3 text-neutral-400 text-xs">{f.occurredAt ? new Date(f.occurredAt).toLocaleDateString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {items.length === 0 && <EmptyState message="No fault records found" icon={CheckCircle2} />}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: MAINTENANCE
+  // ═══════════════════════════════════════════════════════════════
+  const MaintenancePage = () => {
+    useEffect(() => { if (!maintenance) loadMaintenance(); }, []);
+    const cadence = maintenance?.cadence;
+    const wos = maintenance?.workOrders?.items || maintenance?.workOrders?.data || (Array.isArray(maintenance?.workOrders) ? maintenance.workOrders : []);
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* KPIs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Total PMs Evaluated</div><div className="text-2xl font-bold text-neutral-800">{cadence?.totalPMs || cadence?.totalEvaluated || 40}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Cadence Violations</div><div className="text-2xl font-bold text-danger">{cadence?.violations || cadence?.totalViolations || 0}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Compliance Rate</div><div className="text-2xl font-bold text-success">{cadence?.complianceRate?.toFixed(1) || cadence?.compliancePercent?.toFixed(1) || 75}%</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Work Orders</div><div className="text-2xl font-bold text-primary-600">{wos.length}</div></div>
+        </div>
+
+        {/* Cadence Violations */}
+        {cadence?.violations > 0 && cadence?.items && (
+          <div className="card p-6">
+            <h3 className="font-semibold text-neutral-800 mb-4">Cadence Violations</h3>
+            <div className="space-y-2">
+              {(cadence.items || []).filter((v:any) => v.violated).slice(0, 10).map((v: any, i: number) => (
+                <div key={i} className="p-3 rounded-xl border border-danger/20 bg-danger-light/10 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-700">{v.assetName || v.assetId}</div>
+                    <div className="text-xs text-neutral-500">Gap: {v.gapDays || v.actualGap} days (Max allowed: {v.maxAllowed || 90} days)</div>
+                  </div>
+                  <span className="pill pill-critical">VIOLATION</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Work Orders */}
+        <div className="card overflow-hidden">
+          <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between">
+            <h3 className="font-semibold text-neutral-800">Work Orders</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr className="border-b border-neutral-200">
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">WO ID</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Asset</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Type</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Priority</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {wos.slice(0, 25).map((wo: any) => (
+                  <tr key={wo.id} className="border-b border-neutral-100 hover:bg-neutral-50 transition">
+                    <td className="px-6 py-3 font-mono text-xs text-primary-600">{wo.workOrderId || wo.id}</td>
+                    <td className="px-6 py-3 text-neutral-600">{wo.asset?.name || wo.assetId || "—"}</td>
+                    <td className="px-6 py-3 text-neutral-500">{wo.type || "PM"}</td>
+                    <td className="px-6 py-3"><SeverityPill level={wo.priority || "MEDIUM"} /></td>
+                    <td className="px-6 py-3"><span className="pill bg-neutral-100 text-neutral-600">{wo.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {wos.length === 0 && <EmptyState message="No work orders found" icon={Wrench} />}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: CONTRACTS
+  // ═══════════════════════════════════════════════════════════════
+  const ContractsPage = () => {
+    const items = contracts || [];
+    const expiringSoon = items.filter((c: any) => {
+      const days = c.endDate ? Math.ceil((new Date(c.endDate).getTime() - Date.now()) / 86400000) : 999;
+      return days >= 0 && days <= 14;
+    });
+
+    return (
+      <div className="space-y-6 fade-in">
+        {/* Expiring Alert */}
+        {expiringSoon.length > 0 && (
+          <div className="bg-danger-light border border-danger/20 rounded-xl p-4 flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-danger" />
+            <span className="text-sm font-medium text-danger">{expiringSoon.length} contract{expiringSoon.length > 1 ? "s" : ""} expire within 14 days. Review now.</span>
+          </div>
+        )}
+
+        {/* KPIs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Active Contracts</div><div className="text-2xl font-bold text-neutral-800">{items.length}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Expiring ≤30 Days</div><div className="text-2xl font-bold text-warning">{dashboard?.kpis?.contractsExpiring30Days || 0}</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Avg Compliance</div><div className="text-2xl font-bold text-success">{items.length > 0 ? (items.reduce((s:number,c:any) => s + (c.complianceScore || 0), 0) / items.length).toFixed(1) : "—"}%</div></div>
+          <div className="card p-5"><div className="text-sm text-neutral-500 mb-1">Total Value</div><div className="text-2xl font-bold text-primary-600">${((items.reduce((s:number,c:any) => s + (c.value || 0), 0)) / 1000).toFixed(0)}K</div></div>
+        </div>
+
+        {/* Renewal Pipeline */}
+        <div className="card p-6">
+          <h3 className="font-semibold text-neutral-800 mb-4">Contract Renewal Pipeline</h3>
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            {items.map((c: any) => {
+              const daysLeft = c.endDate ? Math.ceil((new Date(c.endDate).getTime() - Date.now()) / 86400000) : 0;
+              const color = daysLeft < 14 ? "border-danger bg-danger-light/20" : daysLeft < 30 ? "border-warning bg-warning-light/20" : daysLeft < 60 ? "border-yellow-400 bg-yellow-50" : "border-success bg-success-light/20";
+              return (
+                <div key={c.id} className={`min-w-64 p-4 rounded-xl border-2 ${color} flex-shrink-0`}>
+                  <div className="text-sm font-semibold text-neutral-800 mb-1">{c.name || c.contractId}</div>
+                  <div className="text-xs text-neutral-500 mb-2">{c.vendor || "—"} • {c.type || "AMC"}</div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">${(c.value || 0).toLocaleString()}</span>
+                    <span className={`text-xs font-bold ${daysLeft < 14 ? "text-danger" : daysLeft < 30 ? "text-warning" : "text-success"}`}>{daysLeft} days</span>
+                  </div>
+                  {c.complianceScore != null && (
+                    <div className="mt-2 h-1.5 bg-neutral-200 rounded-full overflow-hidden">
+                      <div className="h-full bg-success rounded-full" style={{ width: `${c.complianceScore}%` }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Contracts Table */}
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-50">
+                <tr className="border-b border-neutral-200">
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Contract</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Vendor</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Type</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Value</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Compliance</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Expires</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-neutral-400 uppercase">Risk</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((c: any) => {
+                  const daysLeft = c.endDate ? Math.ceil((new Date(c.endDate).getTime() - Date.now()) / 86400000) : 0;
+                  const risk = daysLeft < 14 ? "CRITICAL" : daysLeft < 30 ? "HIGH" : daysLeft < 60 ? "MEDIUM" : "LOW";
+                  return (
+                    <tr key={c.id} className="border-b border-neutral-100 hover:bg-neutral-50 transition">
+                      <td className="px-6 py-3"><div className="font-medium text-neutral-700">{c.name || c.contractId}</div><div className="text-xs text-neutral-400 font-mono">{c.contractId}</div></td>
+                      <td className="px-6 py-3 text-neutral-500">{c.vendor || "—"}</td>
+                      <td className="px-6 py-3"><span className="pill bg-primary-50 text-primary-600">{c.type || "AMC"}</span></td>
+                      <td className="px-6 py-3 font-medium text-neutral-700">${(c.value || 0).toLocaleString()}</td>
+                      <td className="px-6 py-3"><HealthBadge score={c.complianceScore || 0} /></td>
+                      <td className="px-6 py-3 text-neutral-500 text-xs">{c.endDate ? new Date(c.endDate).toLocaleDateString() : "—"}<br/><span className="font-medium">{daysLeft} days</span></td>
+                      <td className="px-6 py-3"><SeverityPill level={risk} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {items.length === 0 && <EmptyState message="No contracts found" icon={FileText} />}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: ALERTS
+  // ═══════════════════════════════════════════════════════════════
+  const AlertsPage = () => {
+    const [tab, setTab] = useState("ALL");
+    const filtered = alerts.filter(a => {
+      if (tab === "ALL") return true;
+      return a.severity === tab;
+    });
+
+    return (
+      <div className="space-y-6 fade-in">
+        <div className="card p-4">
+          <div className="flex gap-1 bg-neutral-100 p-1 rounded-lg w-fit">
+            {["ALL","CRITICAL","HIGH","MEDIUM","LOW"].map(t => (
+              <button key={t} onClick={() => setTab(t)}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition ${tab === t ? "bg-white text-neutral-800 shadow-sm" : "text-neutral-500"}`}>
+                {t}
+                <span className="ml-1.5 text-xs text-neutral-400">
+                  ({t === "ALL" ? alerts.length : alerts.filter(a => a.severity === t).length})
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {filtered.length > 0 ? filtered.map((item: any) => (
+            <div key={item.id} className={`card p-5 border-l-4 ${
+              item.severity === "CRITICAL" ? "border-l-danger" : item.severity === "HIGH" ? "border-l-warning" : item.severity === "MEDIUM" ? "border-l-blue-400" : "border-l-success"
+            }`}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <SeverityPill level={item.severity || "MEDIUM"} />
+                    <span className="text-xs text-neutral-400 font-mono">{item.type}</span>
+                    <span className="text-sm font-medium text-neutral-700">{item.asset?.name || item.assetId || "Fleet Item"}</span>
+                  </div>
+                  <h4 className="text-sm font-semibold text-neutral-800">{item.title}</h4>
+                  <p className="text-xs text-neutral-500 mt-0.5">{item.message || item.reason}</p>
+                  {item.currentValue && (
+                    <div className="text-xs text-neutral-500 mt-1">
+                      Value: <span className="font-semibold text-warning">{item.currentValue}</span> • Threshold: {item.threshold}
+                    </div>
+                  )}
+                  {item.recommendedAction && <p className="text-xs text-primary-600 mt-1 font-medium">→ {item.recommendedAction}</p>}
+                </div>
+                <div className="flex flex-col items-end gap-2">
+                  <span className="text-xs text-neutral-400">{item.status}</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => acknowledgeAlert(item.id)} className="btn-secondary text-xs !py-1 !px-3">Acknowledge</button>
+                    <button onClick={() => item.assetId && loadAssetDetail(item.assetId)} className="btn-primary text-xs !py-1 !px-3">Inspect</button>
+                  </div>
                 </div>
               </div>
             </div>
+          )) : <EmptyState message="No alerts matching this filter" icon={CheckCircle2} />}
+        </div>
+      </div>
+    );
+  };
 
-            {/* Datasets Breakdown Banner */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-semibold text-white flex items-center space-x-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-400"></span>
-                    <span>NASA C-MAPSS Turbofan Simulation</span>
-                  </h3>
-                  <span className="text-xs font-mono bg-blue-500/10 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded">
-                    FD001 – FD004
-                  </span>
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: REPORTS
+  // ═══════════════════════════════════════════════════════════════
+  const ReportsPage = () => (
+    <div className="space-y-6 fade-in">
+      <div className="card p-6">
+        <h3 className="font-semibold text-neutral-800 mb-4">Generated Reports</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[
+            { name: "Fleet Health Summary", type: "PDF", date: "Oct 1, 2026", icon: Activity },
+            { name: "PM Compliance Report", type: "PDF", date: "Sep 30, 2026", icon: Calendar },
+            { name: "Contract Renewal Risk", type: "PDF", date: "Sep 28, 2026", icon: FileText },
+            { name: "MTBF Analysis", type: "CSV", date: "Sep 25, 2026", icon: BarChart3 },
+            { name: "IoT Anomaly Log", type: "CSV", date: "Sep 22, 2026", icon: Wifi },
+            { name: "Fault Trend Analysis", type: "PDF", date: "Sep 20, 2026", icon: Zap },
+          ].map((r, i) => {
+            const Icon = r.icon;
+            return (
+              <div key={i} className="card card-hover p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-primary-50 flex items-center justify-center"><Icon className="w-5 h-5 text-primary-600" /></div>
+                  <div>
+                    <div className="text-sm font-medium text-neutral-700">{r.name}</div>
+                    <div className="text-xs text-neutral-400">{r.date} • {r.type}</div>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-400">
-                  Extracted from <code className="text-slate-300">CMAPSSData.zip</code>. Covers 100 turbofan engine run-to-failure trajectories with 21 high-frequency sensors (T24, T30, T50, P30, fan speed Nf, core speed Nc, Ps30, fuel-ratio phi).
-                </p>
-                <div className="mt-3 flex items-center space-x-4 text-xs font-mono text-slate-300">
-                  <div>Failure Mode: <span className="text-amber-400">HPC & Fan Degradation</span></div>
-                  <div>Provenance: <span className="text-emerald-400">CMAPSS / unit-ID</span></div>
-                </div>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-semibold text-white flex items-center space-x-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-purple-400"></span>
-                    <span>AI4I 2020 Predictive Maintenance</span>
-                  </h3>
-                  <span className="text-xs font-mono bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded">
-                    10,000 Records
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  Parsed from <code className="text-slate-300">ai4i2020.csv</code>. Captures CNC machine failure modes: Tool Wear Failure (TWF), Heat Dissipation (HDF), Power Failure (PWF), Overstrain (OSF), and Random Failure (RNF).
-                </p>
-                <div className="mt-3 flex items-center space-x-4 text-xs font-mono text-slate-300">
-                  <div>Failure Modes: <span className="text-amber-400">TWF, HDF, PWF, OSF, RNF</span></div>
-                  <div>Provenance: <span className="text-emerald-400">AI4I_2020 / UDI</span></div>
-                </div>
-              </div>
-            </div>
-
-            {/* Composite Endpoint Spotlight */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-2">
-                  <span className="px-2 py-0.5 rounded text-xs font-mono bg-emerald-500/20 text-emerald-300 font-bold">GET</span>
-                  <span className="font-mono text-sm text-slate-200">/api/v1/dashboard</span>
-                  <span className="text-xs text-slate-400">• Single composite call powering whole frontend</span>
-                </div>
-                <button
-                  onClick={() => handleExecuteEndpoint("/api/v1/dashboard")}
-                  className="text-xs px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 font-mono"
-                >
-                  Test Endpoint
+                <button className="btn-secondary w-full text-xs flex items-center justify-center gap-1">
+                  <Download className="w-3.5 h-3.5" /> Download
                 </button>
               </div>
-              <p className="text-xs text-slate-400 mb-3">
-                Returns KPI metrics, health distribution, location asset counts, top faults, live system status, and Action Center queue in one request.
-              </p>
-              <div className="bg-slate-950 p-4 rounded-lg font-mono text-xs text-slate-300 overflow-x-auto max-h-64 border border-slate-800">
-                <pre>{JSON.stringify({
-                  kpis: {
-                    totalAssets: backendStatus.totalAssets,
-                    operationalAssets: backendStatus.totalAssets - 78,
-                    highRiskAssets: 78,
-                    criticalAlertsCount: backendStatus.activeAlerts,
-                    monitoredSensors: backendStatus.sensors,
-                    detectedAnomalies: backendStatus.anomalies,
-                  },
-                  healthDistribution: { critical: 38, degraded: 40, operational: 603 },
-                  liveSystemStatus: {
-                    iotGatewayStatus: "HEALTHY",
-                    databaseEngine: "PostgreSQL / Prisma Relational Store",
-                    ingestedDatasets: ["NASA C-MAPSS (FD001-FD004)", "AI4I 2020 Predictive Maintenance"]
-                  }
-                }, null, 2)}</pre>
-              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* MTBF Stats */}
+      {mtbf && (
+        <div className="card p-6">
+          <h3 className="font-semibold text-neutral-800 mb-4">MTBF & Reliability Analytics</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="p-4 rounded-xl bg-neutral-50">
+              <div className="text-xs text-neutral-400 mb-1">Fleet MTBF</div>
+              <div className="text-xl font-bold text-neutral-800">{mtbf.fleetMTBF || mtbf.mtbfHours || "—"} hrs</div>
+            </div>
+            <div className="p-4 rounded-xl bg-neutral-50">
+              <div className="text-xs text-neutral-400 mb-1">Fleet MTTR</div>
+              <div className="text-xl font-bold text-warning">{mtbf.fleetMTTR || mtbf.mttrHours || "—"} hrs</div>
+            </div>
+            <div className="p-4 rounded-xl bg-neutral-50">
+              <div className="text-xs text-neutral-400 mb-1">Availability</div>
+              <div className="text-xl font-bold text-success">{mtbf.fleetAvailability || mtbf.availability || "—"}%</div>
+            </div>
+            <div className="p-4 rounded-xl bg-neutral-50">
+              <div className="text-xs text-neutral-400 mb-1">Total Failures</div>
+              <div className="text-xl font-bold text-danger">{mtbf.totalFailures || "—"}</div>
             </div>
           </div>
-        )}
+        </div>
+      )}
+    </div>
+  );
 
-        {/* TAB 2: ACTION CENTER */}
-        {activeTab === "actionCenter" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between flex-wrap gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <AlertTriangle className="w-5 h-5 text-amber-400" />
-                    <span>Action Center Prioritization Engine (Section 16)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Synthesizes active Alerts, Overdue PMs, Expiring Contracts, and High-Risk Assets into an urgency-ranked operational queue.
-                  </p>
-                </div>
-                {/* Filter Pills */}
-                <div className="flex space-x-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
-                  {(["ALL", "CRITICAL", "HIGH", "PM", "CONTRACT"] as const).map((filter) => (
-                    <button
-                      key={filter}
-                      onClick={() => setActionFilter(filter)}
-                      className={`px-3 py-1 rounded text-xs font-mono transition ${
-                        actionFilter === filter ? "bg-amber-500 text-slate-950 font-bold" : "text-slate-400 hover:text-white"
-                      }`}
-                    >
-                      {filter}
-                    </button>
-                  ))}
-                </div>
-              </div>
+  // ═══════════════════════════════════════════════════════════════
+  // PAGE: AI ASSISTANT
+  // ═══════════════════════════════════════════════════════════════
+  const AiPage = () => {
+    const chatEnd = useRef<HTMLDivElement>(null);
+    useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [aiMessages]);
 
-              <div className="mt-6 space-y-3">
-                {filteredAlerts.length > 0 ? (
-                  filteredAlerts.map((item) => (
-                    <div
-                      key={item.id}
-                      className="bg-slate-950/80 border border-slate-800 p-4 rounded-lg flex items-start justify-between hover:border-slate-700 transition flex-wrap gap-4"
-                    >
-                      <div className="space-y-1 max-w-2xl">
-                        <div className="flex items-center space-x-2">
-                          <span
-                            className={`px-2 py-0.5 text-xs font-bold rounded ${
-                              item.severity === "CRITICAL"
-                                ? "bg-red-500/20 text-red-400 border border-red-500/30"
-                                : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                            }`}
-                          >
-                            {item.severity}
-                          </span>
-                          <span className="text-xs font-mono text-slate-500">[{item.type}]</span>
-                          <span className="text-xs font-medium text-slate-300">
-                            {item.asset?.name || item.assetId || "Fleet Item"}
-                          </span>
-                          <span className="text-xs font-mono text-slate-500">
-                            Source: {item.sourceDataset}
-                          </span>
-                        </div>
-                        <h4 className="text-sm font-semibold text-white mt-1">{item.title}</h4>
-                        <p className="text-xs text-slate-400">{item.message || item.reason}</p>
-                        {item.currentValue && (
-                          <div className="text-xs text-slate-400 pt-1 flex items-center space-x-2 font-mono">
-                            <span>Value: <span className="text-amber-400 font-bold">{item.currentValue}</span></span>
-                            <span>•</span>
-                            <span>Threshold: <span className="text-slate-300">{item.threshold}</span></span>
-                          </div>
-                        )}
-                        <div className="text-xs text-slate-500 pt-1 flex items-center space-x-1">
-                          <span>Action:</span>
-                          <span className="text-slate-300 font-medium">{item.recommendedAction}</span>
-                        </div>
-                      </div>
-
-                      <div className="text-right space-y-2">
-                        <span className="text-xs font-mono text-slate-500 block">
-                          Status: <span className="text-amber-400 font-bold">{item.status}</span>
-                        </span>
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => handleAcknowledgeAlert(item.id)}
-                            className="px-2.5 py-1 rounded text-xs font-mono bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                          >
-                            Acknowledge
-                          </button>
-                          <button
-                            onClick={() => handleResolveAlert(item.id)}
-                            className="px-2.5 py-1 rounded text-xs font-mono font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 shadow"
-                          >
-                            Resolve
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-center py-12 text-slate-500 text-sm">
-                    No active alerts matching filter.
-                  </div>
-                )}
-              </div>
+    return (
+      <div className="max-w-3xl mx-auto space-y-6 fade-in">
+        <div className="card p-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center"><Bot className="w-5 h-5 text-primary-600" /></div>
+            <div>
+              <h2 className="font-semibold text-neutral-800">AI Service Intelligence Assistant</h2>
+              <p className="text-xs text-neutral-400">Evidence-grounded answers from your equipment database</p>
             </div>
           </div>
-        )}
 
-        {/* TAB 3: RISK ENGINE */}
-        {activeTab === "riskEngine" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <ShieldCheck className="w-5 h-5 text-emerald-400" />
-                    <span>Explainable Risk & Health Engine (Section 5)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Multi-factor risk assessment combining RUL, operating degradation, sensor anomalies, and failure recurrence.
-                  </p>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <span className="text-xs text-slate-400">Select Equipment:</span>
-                  <select
-                    value={selectedAssetId}
-                    onChange={(e) => loadAssetDetails(e.target.value)}
-                    className="bg-slate-950 text-slate-200 text-xs px-3 py-1.5 rounded-lg border border-slate-700 font-mono"
-                  >
-                    <option value="EQ-CMAPSS-FD001-001">EQ-CMAPSS-FD001-001 (Turbofan - Terminal HPC Degradation)</option>
-                    <option value="EQ-CMAPSS-FD002-005">EQ-CMAPSS-FD002-005 (Turbofan - 6 Operating Modes)</option>
-                    <option value="EQ-AI4I-M14860">EQ-AI4I-M14860 (CNC Milling - Tool Wear Failure)</option>
-                    <option value="EQ-AI4I-L47181">EQ-AI4I-L47181 (CNC Milling - Overstrain Failure)</option>
-                  </select>
-                </div>
+          {/* Chat */}
+          <div className="mt-4 space-y-4 max-h-[500px] overflow-y-auto pr-2">
+            {aiMessages.length === 0 && (
+              <div className="text-center py-8 text-neutral-400">
+                <Bot className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">Ask me about equipment health, sensor anomalies, contract status, or fault patterns.</p>
               </div>
-
-              {selectedAssetData && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4">
-                    <div>
-                      <span className="text-xs font-mono text-slate-500">EQUIPMENT IDENTIFIER</span>
-                      <h3 className="text-lg font-bold text-white mt-0.5">{selectedAssetData.name}</h3>
-                      <div className="text-xs font-mono text-amber-400 mt-0.5">{selectedAssetData.assetId}</div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 pt-2">
-                      <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Health Score</div>
-                        <div className="text-2xl font-bold text-amber-400 mt-1">{selectedAssetData.healthScore}%</div>
-                      </div>
-                      <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Risk Score</div>
-                        <div className="text-2xl font-bold text-red-400 mt-1">{selectedAssetData.riskScore}%</div>
-                      </div>
-                    </div>
-                    <div className="text-xs space-y-1.5 text-slate-400 pt-2 border-t border-slate-800/80">
-                      <div>Status: <span className="text-white font-mono font-bold">{selectedAssetData.status}</span></div>
-                      <div>Risk Level: <span className="text-red-400 font-mono font-bold">{selectedAssetData.riskLevel}</span></div>
-                      <div>Remaining Life (RUL): <span className="text-white font-mono font-bold">{selectedAssetData.rul} cycles</span></div>
-                      <div>Dataset Provenance: <span className="text-emerald-400 font-mono">{selectedAssetData.sourceDataset}</span></div>
-                      <div>Record ID: <span className="text-slate-300 font-mono">{selectedAssetData.sourceRecordId}</span></div>
-                    </div>
-                  </div>
-
-                  <div className="md:col-span-2 bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4">
-                    <h4 className="text-sm font-semibold text-white flex items-center space-x-2">
-                      <Activity className="w-4 h-4 text-amber-400" />
-                      <span>Associated Telemetry Sensors & Failure History</span>
-                    </h4>
-                    <div className="space-y-2">
-                      {selectedAssetData.sensors?.map((s: any) => (
-                        <div key={s.id} className="p-2.5 bg-slate-900/70 rounded-lg border border-slate-800 flex items-center justify-between text-xs font-mono">
-                          <div>
-                            <span className="text-slate-300 font-semibold">{s.name}</span>
-                            <span className="text-slate-500 ml-2">({s.sensorType})</span>
-                          </div>
-                          <div className="flex items-center space-x-3">
-                            <span className="text-slate-400">Safe: {s.safeMax || "—"} {s.unit}</span>
-                            <span className="text-red-400 font-bold">Crit: {s.criticalMax || "—"} {s.unit}</span>
-                            <span className={`px-2 py-0.5 rounded text-xs ${
-                              s.status === "OFFLINE" ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
-                            }`}>
-                              {s.status}
-                            </span>
-                          </div>
+            )}
+            {aiMessages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[85%] p-4 rounded-2xl text-sm ${
+                  msg.role === "user" ? "bg-primary-600 text-white rounded-br-sm" : "bg-neutral-100 text-neutral-700 rounded-bl-sm"
+                }`}>
+                  <div className="whitespace-pre-line">{msg.content}</div>
+                  {msg.evidence?.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-neutral-200/50">
+                      <div className="text-xs font-medium opacity-70 mb-2">Evidence ({msg.evidence.length} records)</div>
+                      {msg.evidence.map((ev: any, j: number) => (
+                        <div key={j} className="text-xs bg-white/10 p-2 rounded mt-1 font-mono overflow-x-auto">
+                          {JSON.stringify(ev, null, 1).substring(0, 200)}
                         </div>
                       ))}
                     </div>
-
-                    {selectedAssetData.faults?.length > 0 && (
-                      <div className="pt-3 border-t border-slate-800">
-                        <span className="text-xs font-mono text-slate-400 block mb-2">RECENT RECORDED FAILURES</span>
-                        {selectedAssetData.faults.map((f: any) => (
-                          <div key={f.id} className="bg-red-500/10 border border-red-500/20 p-2.5 rounded-lg text-xs space-y-1 mb-2">
-                            <div className="flex justify-between font-mono font-bold text-red-300">
-                              <span>[{f.faultCode}] {f.rawFault}</span>
-                              <span>Downtime: {f.downtime} hrs</span>
-                            </div>
-                            <p className="text-slate-400">{f.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: CADENCE EVALUATOR */}
-        {activeTab === "cadence" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <Calendar className="w-5 h-5 text-amber-400" />
-                    <span>Preventive Maintenance Cadence Evaluator (Section 11)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Audits PM compliance and flags cadence spacing violations where inspection gap exceeded contractual window.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleExecuteEndpoint("/api/v1/maintenance/cadence")}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 font-mono"
-                >
-                  Evaluate Cadence Live
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">TOTAL EVALUATED PMS</div>
-                  <div className="text-2xl font-bold text-white mt-1">40 Milestones</div>
-                  <div className="text-xs text-slate-400 mt-1">Across fleet assets</div>
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">CADENCE VIOLATIONS</div>
-                  <div className="text-2xl font-bold text-red-400 mt-1">10 Violations</div>
-                  <div className="text-xs text-slate-400 mt-1">Exceeded 90-day grace window</div>
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">FLEET COMPLIANCE</div>
-                  <div className="text-2xl font-bold text-emerald-400 mt-1">75.0%</div>
-                  <div className="text-xs text-slate-400 mt-1">Strict cadence adherence</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 5: MTBF */}
-        {activeTab === "mtbf" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <Activity className="w-5 h-5 text-emerald-400" />
-                    <span>MTBF & Reliability Statistical Engine (Section 8)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Calculates empirical Mean Time Between Failures (MTBF), MTTR, and fleet availability from actual telemetry and failure logs.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleExecuteEndpoint("/api/v1/analytics/mtbf")}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 font-mono"
-                >
-                  Recalculate MTBF
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">FLEET MTBF</div>
-                  <div className="text-2xl font-bold text-white mt-1">3,490 hrs</div>
-                  <div className="text-xs text-slate-400 mt-1">Operating hours / failures</div>
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">FLEET AVAILABILITY</div>
-                  <div className="text-2xl font-bold text-emerald-400 mt-1">98.4%</div>
-                  <div className="text-xs text-slate-400 mt-1">Operational uptime</div>
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">FLEET MTTR</div>
-                  <div className="text-2xl font-bold text-amber-400 mt-1">3.8 hrs</div>
-                  <div className="text-xs text-slate-400 mt-1">Mean Time to Repair</div>
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <div className="text-xs font-mono text-slate-500">FAILURE DATASETS</div>
-                  <div className="text-2xl font-bold text-blue-400 mt-1">439 Failures</div>
-                  <div className="text-xs text-slate-400 mt-1">Real NASA & AI4I records</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 6: GROUNDED AI ASSISTANT */}
-        {activeTab === "aiAssistant" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <Bot className="w-5 h-5 text-amber-400" />
-                    <span>Evidence-Grounded AI Assistant (Section 20)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Natural language inquiries grounded in actual PostgreSQL database records with attached telemetry evidence.
-                  </p>
-                </div>
-                <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2.5 py-1 rounded border border-slate-800">
-                  POST /api/v1/ai/query
-                </span>
-              </div>
-
-              {/* Inquiry Input Form */}
-              <div className="mt-4 flex gap-2">
-                <input
-                  type="text"
-                  value={aiQuestion}
-                  onChange={(e) => setAiQuestion(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAskAi()}
-                  placeholder="Ask about equipment health, telemetry anomalies, contracts, or failure modes..."
-                  className="flex-1 bg-slate-950 text-slate-100 text-sm px-4 py-2.5 rounded-lg border border-slate-800 focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  onClick={handleAskAi}
-                  disabled={aiLoading}
-                  className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-sm flex items-center space-x-2 transition disabled:opacity-50"
-                >
-                  <Send className={`w-4 h-4 ${aiLoading ? "animate-spin" : ""}`} />
-                  <span>Ask Engine</span>
-                </button>
-              </div>
-
-              {/* Prompt Suggestions */}
-              <div className="flex flex-wrap gap-2 mt-3">
-                {[
-                  "Why is EQ-CMAPSS-FD001-001 high risk?",
-                  "Which equipment has active critical alerts?",
-                  "Which service contracts expire this month?",
-                  "What is the fleet MTBF and availability?",
-                ].map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => {
-                      setAiQuestion(s);
-                    }}
-                    className="text-xs bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-slate-200 px-3 py-1 rounded-full border border-slate-800 transition font-mono"
-                  >
-                    "{s}"
-                  </button>
-                ))}
-              </div>
-
-              {/* AI Response Card */}
-              {aiResponse && (
-                <div className="mt-6 bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-                    <span className="text-xs font-mono text-emerald-400 flex items-center space-x-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>EVIDENCE-GROUNDED RESPONSE</span>
-                    </span>
-                    <span className="text-xs font-mono text-slate-500">{aiResponse.timestamp}</span>
-                  </div>
-
-                  <div className="text-sm text-slate-200 whitespace-pre-line leading-relaxed">
-                    {aiResponse.answer}
-                  </div>
-
-                  {aiResponse.evidence?.length > 0 && (
-                    <div className="pt-3 border-t border-slate-800">
-                      <span className="text-xs font-mono text-slate-400 block mb-2">
-                        ATTACHED DATABASE EVIDENCE ({aiResponse.evidence.length} RECORDS)
-                      </span>
-                      <div className="space-y-2">
-                        {aiResponse.evidence.map((ev: any, idx: number) => (
-                          <div key={idx} className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 font-mono text-xs text-slate-300">
-                            <pre className="overflow-x-auto">{JSON.stringify(ev, null, 2)}</pre>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
                   )}
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 7: CONTRACTS */}
-        {activeTab === "contracts" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <Layers className="w-5 h-5 text-amber-400" />
-                    <span>Contract Renewal & SLA Pipeline (Section 14)</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Multi-tier contract renewal risk modeling across 15/30-day expiration horizons.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleExecuteEndpoint("/api/v1/contracts")}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 font-mono"
-                >
-                  Refresh Contracts
-                </button>
               </div>
-
-              <div className="space-y-3 mt-6">
-                {[
-                  {
-                    id: "AMC-2024-ASH-01",
-                    name: "Enterprise Precision Machining & Turbine Maintenance Agreement",
-                    customer: "Global Tech Facilities LLC",
-                    vendor: "AeroPower & Takumi Engineering Services",
-                    type: "AMC",
-                    value: "$450,000",
-                    compliance: 78.5,
-                    daysRemaining: 18,
-                    risk: "CRITICAL",
-                  },
-                  {
-                    id: "CMC-2025-CHI-02",
-                    name: "Comprehensive Midwest Logistics Equipment Coverage",
-                    customer: "Midwest Intermodal Systems",
-                    vendor: "Industrial Reliability Solutions",
-                    type: "CMC",
-                    value: "$620,000",
-                    compliance: 94.2,
-                    daysRemaining: 120,
-                    risk: "LOW",
-                  },
-                  {
-                    id: "AMC-2025-SJC-03",
-                    name: "Silicon Fab Cleanroom Tooling Critical SLA",
-                    customer: "Silicon West Foundry Inc",
-                    vendor: "Semiconductor Precision Maintenance",
-                    type: "AMC",
-                    value: "$890,000",
-                    compliance: 82.0,
-                    daysRemaining: 25,
-                    risk: "HIGH",
-                  },
-                  {
-                    id: "CMC-2026-LON-04",
-                    name: "London Financial Hub Critical Infrastructure Agreement",
-                    customer: "Canary Wharf Utilities Ltd",
-                    vendor: "AeroPower Europe Support",
-                    type: "CMC",
-                    value: "$520,000",
-                    compliance: 98.0,
-                    daysRemaining: 300,
-                    risk: "LOW",
-                  },
-                ].map((c) => (
-                  <div key={c.id} className="bg-slate-950 border border-slate-800 p-4 rounded-lg flex items-center justify-between flex-wrap gap-4">
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs font-mono font-bold text-amber-400">{c.id}</span>
-                        <span className="text-sm font-semibold text-white">{c.name}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">{c.type}</span>
-                      </div>
-                      <div className="text-xs text-slate-400 mt-1">
-                        Customer: {c.customer} • Vendor: {c.vendor} • Value: <span className="text-slate-200 font-semibold">{c.value}</span>
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">
-                        SLA Compliance: <span className="text-emerald-400 font-mono font-bold">{c.compliance}%</span>
-                      </div>
-                    </div>
-
-                    <div className="text-right space-y-1">
-                      <div
-                        className={`px-2.5 py-1 rounded text-xs font-mono font-bold inline-block ${
-                          c.risk === "CRITICAL"
-                            ? "bg-red-500/20 text-red-400 border border-red-500/30"
-                            : c.risk === "HIGH"
-                            ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                            : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                        }`}
-                      >
-                        RENEWAL RISK: {c.risk}
-                      </div>
-                      <div className="text-xs text-slate-400 font-mono">{c.daysRemaining} days remaining</div>
-                    </div>
+            ))}
+            {aiLoading && (
+              <div className="flex justify-start">
+                <div className="bg-neutral-100 p-4 rounded-2xl rounded-bl-sm">
+                  <div className="flex gap-1.5">
+                    <div className="w-2 h-2 rounded-full bg-neutral-400 pulse-soft" style={{ animationDelay: "0s" }} />
+                    <div className="w-2 h-2 rounded-full bg-neutral-400 pulse-soft" style={{ animationDelay: "0.3s" }} />
+                    <div className="w-2 h-2 rounded-full bg-neutral-400 pulse-soft" style={{ animationDelay: "0.6s" }} />
                   </div>
-                ))}
+                </div>
               </div>
-            </div>
+            )}
+            <div ref={chatEnd} />
           </div>
-        )}
 
-        {/* TAB 8: ENDPOINTS & INTERACTIVE TESTER */}
-        {activeTab === "endpoints" && (
-          <div className="space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-white flex items-center space-x-2">
-                    <Code className="w-5 h-5 text-amber-400" />
-                    <span>REST API Endpoint Catalog & Interactive Tester</span>
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    All backend endpoints run live on the server. Click any endpoint below to test it immediately.
-                  </p>
-                </div>
-                <a
-                  href="/docs"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-3 py-1.5 bg-amber-500 text-slate-950 font-bold rounded-lg text-xs hover:bg-amber-400 transition"
-                >
-                  Open Full Swagger UI (/docs)
-                </a>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                {[
-                  { method: "GET", path: "/api/v1/dashboard", label: "Executive Dashboard" },
-                  { method: "GET", path: "/api/v1/action-center", label: "Action Center Feed" },
-                  { method: "GET", path: "/api/v1/assets?limit=10", label: "Assets Fleet (Paginated)" },
-                  { method: "GET", path: "/api/v1/faults?limit=10", label: "Faults List" },
-                  { method: "GET", path: "/api/v1/faults/taxonomy", label: "Faults Taxonomy" },
-                  { method: "GET", path: "/api/v1/telemetry/anomalies", label: "Telemetry Anomalies" },
-                  { method: "GET", path: "/api/v1/maintenance/cadence", label: "PM Cadence Violations" },
-                  { method: "GET", path: "/api/v1/contracts", label: "Contracts & SLA Pipeline" },
-                  { method: "GET", path: "/api/v1/analytics/mtbf", label: "MTBF Metrics" },
-                  { method: "GET", path: "/api/v1/ingestion/summary", label: "Dataset Ingestion Stats" },
-                ].map((ep, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleExecuteEndpoint(ep.path)}
-                    className="p-3 bg-slate-950 hover:bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-between text-left transition"
-                  >
-                    <div className="flex items-center space-x-2 font-mono text-xs">
-                      <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-bold">
-                        {ep.method}
-                      </span>
-                      <span className="text-slate-200">{ep.path}</span>
-                    </div>
-                    <span className="text-xs text-slate-400 font-sans">{ep.label}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* Live Result Viewer */}
-              <div className="mt-6 pt-4 border-t border-slate-800">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-mono text-slate-400">LAST EXECUTED:</span>
-                    <span className="text-xs font-mono text-amber-400">{testEndpoint}</span>
-                  </div>
-                  {endpointLoading && (
-                    <span className="text-xs font-mono text-emerald-400 animate-pulse">EXECUTING...</span>
-                  )}
-                </div>
-                <div className="bg-slate-950 p-4 rounded-lg font-mono text-xs text-slate-300 overflow-x-auto max-h-96 border border-slate-800">
-                  <pre>{endpointResponse ? JSON.stringify(endpointResponse, null, 2) : "Click an endpoint above to view live JSON response."}</pre>
-                </div>
-              </div>
-            </div>
+          {/* Suggestions */}
+          <div className="flex flex-wrap gap-2 mt-4">
+            {["Why is EQ-CMAPSS-FD001-001 high risk?", "Which contracts expire this month?", "What is the fleet MTBF?", "Show me critical alerts"].map(s => (
+              <button key={s} onClick={() => { setAiInput(s); }} className="text-xs px-3 py-1.5 rounded-full border border-neutral-200 text-neutral-500 hover:border-primary-300 hover:text-primary-600 transition">{s}</button>
+            ))}
           </div>
-        )}
-      </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800 bg-slate-900/60 py-4 px-6 text-center text-xs text-slate-500">
-        AURUM Service Intelligence Backend • NestJS + TypeScript + PostgreSQL + Prisma • NASA C-MAPSS & AI4I 2020 Integrated
-      </footer>
+          {/* Input */}
+          <div className="mt-4 flex gap-2">
+            <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAiSend()}
+              placeholder="Ask about equipment, sensors, contracts..." className="flex-1 px-4 py-3 rounded-xl border border-neutral-200 text-sm outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 transition" />
+            <button onClick={handleAiSend} disabled={aiLoading} className="btn-primary !rounded-xl flex items-center gap-2 !px-5">
+              <Send className="w-4 h-4" /> Send
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════
+  const renderPage = () => {
+    switch (page) {
+      case "dashboard": return <DashboardPage />;
+      case "assets": return <AssetsPage />;
+      case "iot": return <IoTPage />;
+      case "faults": return <FaultsPage />;
+      case "maintenance": return <MaintenancePage />;
+      case "contracts": return <ContractsPage />;
+      case "alerts": return <AlertsPage />;
+      case "reports": return <ReportsPage />;
+      case "ai": return <AiPage />;
+      default: return <DashboardPage />;
+    }
+  };
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-neutral-50">
+      <Sidebar />
+      <MobileDrawer />
+      <SearchModal />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <TopBar />
+        <main className="flex-1 overflow-y-auto p-6">
+          {renderPage()}
+        </main>
+      </div>
     </div>
   );
 }

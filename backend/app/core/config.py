@@ -13,11 +13,11 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://aurum_user:aurum_password@localhost:5432/aurum_db"
+        "sqlite+aiosqlite:///./aurum.db"
     )
     SYNC_DATABASE_URL: str = os.getenv(
         "SYNC_DATABASE_URL",
-        "postgresql://aurum_user:aurum_password@localhost:5432/aurum_db"
+        "sqlite:///./aurum.db"
     )
 
     # JWT Security

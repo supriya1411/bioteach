@@ -1,5 +1,5 @@
 import re
-from typing import Tuple, Optional, Dict, List
+from typing import Tuple, Optional, Dict, List, Any
 
 DEFAULT_FAULT_TAXONOMY: Dict[str, Dict[str, Any]] = {
     "OVERHEATING": {
