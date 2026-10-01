@@ -73,7 +73,7 @@ async function bootstrap() {
     });
   } else {
     server.use(express.static(path.resolve(process.cwd(), 'dist')));
-    server.get('*', (req, res, next) => {
+    server.get('{*splat}', (req, res, next) => {
       if (req.path.startsWith('/api') || req.path.startsWith('/docs') || req.path.startsWith('/ws')) {
         return next();
       }
