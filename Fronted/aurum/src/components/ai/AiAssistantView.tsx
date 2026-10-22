@@ -21,7 +21,7 @@ import { useAurumStore } from '@/store/useStore';
 import { ChatMessage } from '@/types';
 
 export const AiAssistantView: React.FC = () => {
-  const { chatMessages, sendChatMessage, isAiStreaming, addToast } = useAurumStore();
+  const { chatMessages, sendChatMessage, clearChatMessages, isAiStreaming } = useAurumStore();
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -71,7 +71,7 @@ export const AiAssistantView: React.FC = () => {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => addToast('Conversation history reset.', 'info')}
+            onClick={clearChatMessages}
             icon={<RotateCcw className="w-3.5 h-3.5" />}
           >
             Clear Session

@@ -43,11 +43,53 @@ import {
   Layers,
 } from 'lucide-react';
 
-export default function SingleLinkMasterPage() {
-  const [activeModule, setActiveModule] = useState<string>('dashboard');
-  const [selectedAssetId, setSelectedAssetId] = useState<string>('EQ-204');
-  const [selectedSensorId, setSelectedSensorId] = useState<string>('DEV-CHILLER-TEMP');
-  const [selectedContractId, setSelectedContractId] = useState<string>('CTR-8801');
+import { useAurumStore } from '@/store/useStore';
+import { Suspense } from 'react';
+
+function SingleLinkMasterContent() {
+  const searchParams = useSearchParams();
+  const {
+    activeModule,
+    setActiveModule,
+    selectedAssetId,
+    setSelectedAssetId,
+    selectedSensorId,
+    setSelectedSensorId,
+    selectedContractId,
+    setSelectedContractId,
+    assets,
+    devices,
+    contracts,
+  } = useAurumStore();
+
+  // Sync tab/module from URL query params
+  useEffect(() => {
+    const tabParam = searchParams.get('tab') || searchParams.get('module');
+    if (tabParam) {
+      setActiveModule(tabParam);
+    }
+    const assetParam = searchParams.get('assetId') || searchParams.get('id');
+    if (assetParam) {
+      setSelectedAssetId(assetParam);
+    }
+    const sensorParam = searchParams.get('sensorId');
+    if (sensorParam) {
+      setSelectedSensorId(sensorParam);
+    }
+    const contractParam = searchParams.get('contractId');
+    if (contractParam) {
+      setSelectedContractId(contractParam);
+    }
+  }, [searchParams]);
+
+  const handleModuleChange = (tabId: string) => {
+    setActiveModule(tabId);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', tabId);
+      window.history.replaceState({}, '', url.toString());
+    }
+  };
 
   const navigationTabs = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -68,15 +110,71 @@ export default function SingleLinkMasterPage() {
   return (
     <AppLayout title="AURUM Service Operations Command Center">
       {/* Quick Master View Navigator (Single-Link Access) */}
-      <div className="bg-white border border-[#E2E8F0] p-2.5 rounded-2xl shadow-xs sticky top-20 z-10">
-        <div className="flex items-center gap-2 mb-2 px-2">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-[#312E81]">
-            <Layers className="w-4 h-4 text-[#4F46E5]" />
-            <span>AURUM Master View Switcher</span>
+      <div className="bg-white/95 backdrop-blur-md border border-[#E2E8F0] p-3 rounded-2xl shadow-xs sticky top-20 z-10 space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-[#312E81]">
+              <div className="w-6 h-6 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center">
+                <Layers className="w-3.5 h-3.5 text-[#4F46E5]" />
+              </div>
+              <span className="font-black">AURUM Unified Navigator</span>
+            </div>
+            <span className="text-[11px] text-slate-400 hidden md:inline">
+              — Instant switch across all PRD modules
+            </span>
           </div>
-          <span className="text-[11px] text-slate-400 hidden sm:inline">
-            — Browse every PRD screen and flow from this single link
-          </span>
+
+          {/* Quick Target Selectors for Detailed Inspection Views */}
+          {activeModule === 'asset-detail' && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[11px] font-bold text-slate-500">Inspect Asset:</span>
+              <select
+                value={selectedAssetId}
+                onChange={(e) => setSelectedAssetId(e.target.value)}
+                className="bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1 text-xs font-bold text-indigo-900 focus:outline-none"
+              >
+                {assets.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.id} — {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {activeModule === 'sensor-detail' && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[11px] font-bold text-slate-500">Inspect Channel:</span>
+              <select
+                value={selectedSensorId}
+                onChange={(e) => setSelectedSensorId(e.target.value)}
+                className="bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1 text-xs font-bold text-indigo-900 focus:outline-none"
+              >
+                {devices.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.id} — {d.sensorType} ({d.assetName})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {activeModule === 'contract-detail' && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[11px] font-bold text-slate-500">Audit Agreement:</span>
+              <select
+                value={selectedContractId}
+                onChange={(e) => setSelectedContractId(e.target.value)}
+                className="bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1 text-xs font-bold text-indigo-900 focus:outline-none"
+              >
+                {contracts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.id} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
@@ -86,10 +184,10 @@ export default function SingleLinkMasterPage() {
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveModule(tab.id)}
+                onClick={() => handleModuleChange(tab.id)}
                 className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                   isActive
-                    ? 'bg-[#312E81] text-white shadow-sm'
+                    ? 'bg-[#312E81] text-white shadow-sm ring-2 ring-indigo-300/40'
                     : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
                 }`}
               >
@@ -221,5 +319,22 @@ export default function SingleLinkMasterPage() {
         </div>
       )}
     </AppLayout>
+  );
+}
+
+export default function SingleLinkMasterPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-[#F8FAFC]">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+            <p className="text-xs font-bold text-slate-600">Initializing AURUM Command Center...</p>
+          </div>
+        </div>
+      }
+    >
+      <SingleLinkMasterContent />
+    </Suspense>
   );
 }

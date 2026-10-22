@@ -24,6 +24,7 @@ import { useAurumStore } from '@/store/useStore';
 interface NavItem {
   label: string;
   href: string;
+  moduleId: string;
   icon: React.ElementType;
   badge?: number;
 }
@@ -31,6 +32,8 @@ interface NavItem {
 export const Sidebar: React.FC = () => {
   const pathname = usePathname();
   const {
+    activeModule,
+    setActiveModule,
     isSidebarOpen,
     isSidebarCollapsed,
     setSidebarOpen,
@@ -43,40 +46,50 @@ export const Sidebar: React.FC = () => {
   ).length;
 
   const mainNavItems: NavItem[] = [
-    { label: 'Dashboard', href: '/', icon: LayoutDashboard },
-    { label: 'Assets', href: '/assets', icon: Server },
-    { label: 'IoT Monitor', href: '/iot', icon: Activity },
-    { label: 'Fault Analytics', href: '/faults', icon: Zap },
-    { label: 'Maintenance', href: '/maintenance', icon: Wrench },
-    { label: 'Contracts', href: '/contracts', icon: FileText },
+    { label: 'Dashboard', href: '/', moduleId: 'dashboard', icon: LayoutDashboard },
+    { label: 'Assets', href: '/assets', moduleId: 'assets', icon: Server },
+    { label: 'IoT Monitor', href: '/iot', moduleId: 'iot', icon: Activity },
+    { label: 'Fault Analytics', href: '/faults', moduleId: 'faults', icon: Zap },
+    { label: 'Maintenance', href: '/maintenance', moduleId: 'maintenance', icon: Wrench },
+    { label: 'Contracts', href: '/contracts', moduleId: 'contracts', icon: FileText },
     {
       label: 'Alerts',
       href: '/alerts',
+      moduleId: 'alerts',
       icon: Bell,
       badge: criticalAlertsCount,
     },
-    { label: 'Reports', href: '/reports', icon: BarChart3 },
+    { label: 'Reports', href: '/reports', moduleId: 'reports', icon: BarChart3 },
   ];
 
   const bottomNavItems: NavItem[] = [
-    { label: 'AI Assistant', href: '/ai', icon: Sparkles },
-    { label: 'Settings', href: '/settings', icon: Settings },
+    { label: 'AI Assistant', href: '/ai', moduleId: 'ai', icon: Sparkles },
+    { label: 'Settings', href: '/settings', moduleId: 'settings', icon: Settings },
   ];
 
   const renderNavList = (items: NavItem[], isMobile = false) => (
     <ul className="space-y-1">
       {items.map((item) => {
         const Icon = item.icon;
-        const isActive =
-          item.href === '/'
-            ? pathname === '/'
-            : pathname.startsWith(item.href);
+        const isMasterHome = pathname === '/';
+        const isActive = isMasterHome
+          ? activeModule === item.moduleId
+          : pathname.startsWith(item.href);
+
+        const targetHref = isMasterHome ? `/?tab=${item.moduleId}` : item.href;
 
         return (
           <li key={item.href}>
             <Link
-              href={item.href}
-              onClick={() => isMobile && setSidebarOpen(false)}
+              href={targetHref}
+              onClick={() => {
+                if (isMasterHome) {
+                  setActiveModule(item.moduleId);
+                }
+                if (isMobile) {
+                  setSidebarOpen(false);
+                }
+              }}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all group relative ${
                 isActive
                   ? 'bg-[#312E81] text-white shadow-sm'

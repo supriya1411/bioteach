@@ -1,9 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, Menu, Bell, ChevronRight, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Search, Menu, Bell, ChevronRight, Sparkles, CheckCircle2, Activity, Play, Pause } from 'lucide-react';
 import { useAurumStore } from '@/store/useStore';
 import { Button } from '../ui/Button';
 
@@ -15,7 +15,23 @@ interface TopBarProps {
 
 export const TopBar: React.FC<TopBarProps> = ({ title, breadcrumbs, action }) => {
   const pathname = usePathname();
-  const { setSidebarOpen, setSearchOpen, alerts } = useAurumStore();
+  const {
+    setSidebarOpen,
+    setSearchOpen,
+    alerts,
+    isLiveStreaming,
+    toggleLiveStreaming,
+    simulateTelemetryTick,
+  } = useAurumStore();
+
+  // Automatic real-time telemetry simulator ticker
+  useEffect(() => {
+    if (!isLiveStreaming) return;
+    const interval = setInterval(() => {
+      simulateTelemetryTick();
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [isLiveStreaming, simulateTelemetryTick]);
 
   const criticalCount = alerts.filter(
     (a) => a.severity === 'critical' && a.status === 'active'
@@ -91,8 +107,38 @@ export const TopBar: React.FC<TopBarProps> = ({ title, breadcrumbs, action }) =>
         </div>
       </div>
 
-      {/* Right: Search, AI button, Notification bell, Contextual actions */}
+      {/* Right: Live Stream Toggle, Search, AI button, Notification bell, Contextual actions */}
       <div className="flex items-center gap-2 sm:gap-3">
+        {/* Live Telemetry Stream Indicator & Toggle */}
+        <button
+          onClick={toggleLiveStreaming}
+          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border shadow-2xs ${
+            isLiveStreaming
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+              : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+          }`}
+          title={isLiveStreaming ? 'Click to Pause live telemetry simulation' : 'Click to Resume live telemetry simulation'}
+        >
+          <div className="relative flex items-center justify-center">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isLiveStreaming ? 'bg-emerald-600' : 'bg-amber-600'
+              }`}
+            />
+            {isLiveStreaming && (
+              <span className="absolute w-4 h-4 rounded-full bg-emerald-400 radar-ping" />
+            )}
+          </div>
+          <span className="hidden md:inline font-mono text-[11px]">
+            {isLiveStreaming ? 'LIVE (1.4k/s)' : 'STREAM PAUSED'}
+          </span>
+          {isLiveStreaming ? (
+            <Pause className="w-3 h-3 text-emerald-700 hidden sm:inline" />
+          ) : (
+            <Play className="w-3 h-3 text-amber-700 hidden sm:inline" />
+          )}
+        </button>
+
         {/* Global Search trigger (Cmd/Ctrl + K) */}
         <button
           onClick={() => setSearchOpen(true)}
